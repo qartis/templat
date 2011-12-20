@@ -3,10 +3,15 @@
 This line intentionally blank.
 
 <table>
-<TMPL_LOOP USERS>
+<TMPL_LOOP PEOPLE>
 <tr>
 <td><TMPL_VAR NAME> - </td>
 <td><TMPL_VAR EMAIL></td>
+<td>
+    <TMPL_LOOP MENU>
+    <TMPL_VAR NAME> ($<TMPL_VAR PRICE>)
+    </TMPL_LOOP MENU>
+</td>
 </tr>
-</TMPL_LOOP USERS>
+</TMPL_LOOP PEOPLE>
 </table>

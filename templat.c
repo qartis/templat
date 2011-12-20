@@ -5,7 +5,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <regex.h>
 
 #include "templat.h"
 
@@ -17,6 +16,15 @@ void templat_row_addvar(struct templat_row_t *row, char *key, char *val)
     var->val = strdup(val);
     row->vars[n] = var;
     row->nkeys++;
+}
+
+void templat_row_addloop(struct templat_row_t *row, struct templat_loop_t *loop, char *key){
+    int n = row->nloops;
+    struct templat_loop_t *duploop = malloc(sizeof(*duploop));
+    *duploop = *loop;
+    duploop->key = key;
+    row->loops[n] = duploop;
+    row->nloops++;
 }
 
 void templat_addvar(struct templat_t *tmpl, char *key, char *val)
@@ -86,89 +94,98 @@ char *templat_get_var(struct templat_var_t **vars, int nkeys, char *key)
 
 char *templat_process_vars(struct templat_var_t **vars, int nkeys, char *data)
 {
-    size_t rm;
     char *output;
-    regex_t preg;
-    regmatch_t pmatch[3];
     int offset = 0;
+    char key[MAX+1];
+    char *pos;
+    char *val;
+    int n;
+    int len;
 
     output = malloc(HUGE);
     output[0] = '\0';
 
-    regcomp(&preg, "<TMPL_VAR[[:space:]]+([[:alpha:]]+)>", REG_EXTENDED);
-
-    while ((rm = regexec(&preg, data + offset, 3, pmatch, 0)) != REG_NOMATCH) {
-        char *key =
-            strndup(data + offset + pmatch[1].rm_so,
-                    pmatch[1].rm_eo - pmatch[1].rm_so);
-        char *val = templat_get_var(vars, nkeys, key);
+    while ((pos = strstr(data + offset, "<TMPL_VAR"))){
+        n = sscanf(pos, "<TMPL_VAR %" XSTR(MAX) "[a-zA-Z_]>%n", key, &len);
+        if (n != 1){
+            printf("malformed input sequence: %.20s\n", pos);
+            goto err;
+        }
+        val = templat_get_var(vars, nkeys, key);
         if (!val) {
             printf("key not found: %s\n", key);
-            free(data);
-            return output;
+            goto err;
         }
-        strncat(output, data + offset, pmatch[0].rm_so);
+        strncat(output, data + offset, pos - data - offset);
         strcat(output, val);
-        offset += pmatch[0].rm_eo;
+        offset = pos - data + len;
     }
+
+err:
     strcat(output, data + offset);
     free(data);
 
     return output;
 }
 
-struct templat_loop_t *templat_get_loop(struct templat_t *tmpl, char *key)
+struct templat_loop_t *templat_get_loop(struct templat_loop_t **loops, int nloops, char *key)
 {
     int i;
-    for (i = 0; i < tmpl->nloops; i++) {
-        if (strcmp(tmpl->loops[i]->key, key) == 0) {
-            return tmpl->loops[i];
+    for (i = 0; i < nloops; i++) {
+        if (strcmp(loops[i]->key, key) == 0) {
+            return loops[i];
         }
     }
     return NULL;
 }
 
-char *templat_process_loops(struct templat_t *tmpl, char *data)
+char *templat_process_loops(struct templat_loop_t **loops, int nloops, char *data)
 {
-    regex_t preg;
-    regmatch_t pmatch[3];
+    char buf[MAX];
     char *output;
     char *rendered_loop;
-    size_t rm;
     int offset = 0;
     int i;
+    int n;
+    char *pos;
+    char *end;
+    char key[MAX+1];
+    struct templat_loop_t *loop;
+    int len;
 
     output = malloc(HUGE);
     output[0] = '\0';
 
-    /* never parse html with regular expressions */
-    regcomp(&preg,
-            "<TMPL_LOOP[[:space:]]+([[:alpha:]]+)[[:space:]]*>"
-            "(.*)"
-            "</TMPL_LOOP[[:space:]]+\\1[[:space:]]*>",
-            REG_EXTENDED);
-
-    while ((rm = regexec(&preg, data + offset, 3, pmatch, 0)) != REG_NOMATCH) {
-        char *key = strndup(data + offset + pmatch[1].rm_so,
-                            pmatch[1].rm_eo - pmatch[1].rm_so);
-        struct templat_loop_t *loop = templat_get_loop(tmpl, key);
-        if (!loop) {
-            printf("key not found: %s\n", key);
-            return data;
+    while ((pos = strstr(data + offset, "<TMPL_LOOP"))){
+        n = sscanf(pos, "<TMPL_LOOP %" XSTR(MAX) "[a-zA-Z_]>%n", key, &len);
+        if (n != 1){
+            printf("malformed input sequence: '%.20s'\n", pos);
+            goto err;
         }
-        strncat(output, data + offset, pmatch[0].rm_so);
-        for (i = 0; i < loop->nrows; i++) {
-            rendered_loop = strndup(data + offset + pmatch[2].rm_so,
-                                    pmatch[2].rm_eo - pmatch[2].rm_so);
-            rendered_loop = templat_process_vars(loop->rows[i]->vars,
-                                                 loop->rows[i]->nkeys,
-                                                 rendered_loop);
-            strcat(output, rendered_loop);
+        snprintf(buf, sizeof(buf), "</TMPL_LOOP %s>", key);
+        end = strstr(data + offset + len, buf);
+        if (!end){
+            printf("unterminated loop: %.20s\n", pos);
+            goto err;
+        }
+        strncat(output, data + offset, pos - data);
+        loop = templat_get_loop(loops, nloops, key);
+        if (loop){
+            for (i = 0; i < loop->nrows; i++) {
+                rendered_loop = strndup(pos + len, end - pos - strlen(buf));
+                rendered_loop = templat_process_loops(loop->rows[i]->loops, loop->rows[i]->nloops, rendered_loop);
+                rendered_loop = templat_process_vars(loop->rows[i]->vars,
+                                                    loop->rows[i]->nkeys,
+                                                    rendered_loop);
+                strcat(output, rendered_loop);
+                free(rendered_loop);
+            }
         }
 
-        offset += pmatch[0].rm_eo;
+        offset = end + strlen(buf) - data;
     }
 
+err:
     strcat(output, data + offset);
     free(data);
     return output;
@@ -183,7 +200,7 @@ void templat_render(struct templat_t *tmpl, char *filename)
         return;
     }
 
-    data = templat_process_loops(tmpl, data);
+    data = templat_process_loops(tmpl->loops, tmpl->nloops, data);
     data = templat_process_vars(tmpl->vars, tmpl->nkeys, data);
 
     printf("%s", data);
