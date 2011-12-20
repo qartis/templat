@@ -16,6 +16,13 @@ int main()
 
     {
         struct templat_row_t row = TEMPLAT_ROW_INIT;
+        templat_row_addvar(&row, "NAME", "Sarah");
+        templat_row_addvar(&row, "EMAIL", "xzqsarah@gmail.com");
+        templat_loop_addrow(&users, &row);
+    }
+
+    {
+        struct templat_row_t row = TEMPLAT_ROW_INIT;
         templat_row_addvar(&row, "NAME", "Col. Sanders");
         templat_row_addvar(&row, "EMAIL", "sanders@kentucky.mil");
         templat_loop_addrow(&users, &row);
