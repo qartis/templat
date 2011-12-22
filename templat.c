@@ -9,32 +9,68 @@
 
 #include "templat.h"
 
-void templat_row_addvar(struct templat_row_t *row, char *key, char *val)
+char *templat_process(struct templat_row_t *row, char *data);
+
+void templat_init(struct templat_t *tmpl, const char *filename)
+{
+    templat_row_init(&tmpl->row);
+    tmpl->filename = strdup(filename);
+}
+
+void templat_row_init(struct templat_row_t *row)
+{
+    row->nloops = 0;
+    row->nvars = 0;
+}
+
+void templat_loop_init(struct templat_loop_t *loop)
+{
+    loop->nrows = 0;
+    loop->key = NULL;
+}
+
+void templat_row_free(struct templat_row_t *row)
+{
+    int i, j;
+
+    for (i = 0; i < row->nloops; i++) {
+        for (j = 0; j < row->loops[i]->nrows; j++) {
+            templat_row_free(row->loops[i]->rows[j]);
+            free(row->loops[i]->rows[j]);
+        }
+        free(row->loops[i]);
+    }
+
+    for (i = 0; i < row->nvars; i++) {
+        free(row->vars[i]->val);
+        free(row->vars[i]);
+    }
+}
+
+void templat_free(struct templat_t *tmpl)
+{
+    templat_row_free(&tmpl->row);
+    free(tmpl->filename);
+}
+
+void templat_row_addvar(struct templat_row_t *row, const char *key,
+                        const char *val)
 {
     struct templat_var_t *var = malloc(sizeof(*var));
     var->key = key;
     var->val = strdup(val);
-    row->vars[row->nkeys] = var;
-    row->nkeys++;
+    row->vars[row->nvars] = var;
+    row->nvars++;
 }
 
 void templat_row_addloop(struct templat_row_t *row, struct templat_loop_t *loop,
-                         char *key)
+                         const char *key)
 {
     struct templat_loop_t *duploop = malloc(sizeof(*duploop));
     *duploop = *loop;
     duploop->key = key;
     row->loops[row->nloops] = duploop;
     row->nloops++;
-}
-
-void templat_addvar(struct templat_t *tmpl, char *key, char *val)
-{
-    struct templat_var_t *var = malloc(sizeof(*var));
-    var->key = key;
-    var->val = strdup(val);
-    tmpl->vars[tmpl->nkeys] = var;
-    tmpl->nkeys++;
 }
 
 void templat_loop_addrow(struct templat_loop_t *loop, struct templat_row_t *row)
@@ -45,17 +81,18 @@ void templat_loop_addrow(struct templat_loop_t *loop, struct templat_row_t *row)
     loop->nrows++;
 }
 
-void templat_addloop(struct templat_t *tmpl, struct templat_loop_t *loop,
-                     char *key)
+void templat_addvar(struct templat_t *tmpl, const char *key, const char *val)
 {
-    struct templat_loop_t *duploop = malloc(sizeof(*duploop));
-    *duploop = *loop;
-    duploop->key = key;
-    tmpl->loops[tmpl->nloops] = duploop;
-    tmpl->nloops++;
+    templat_row_addvar(&tmpl->row, key, val);
 }
 
-char *read_file(char *filename)
+void templat_addloop(struct templat_t *tmpl, struct templat_loop_t *loop,
+                     const char *key)
+{
+    templat_row_addloop(&tmpl->row, loop, key);
+}
+
+char *read_file(const char *filename)
 {
     struct stat st;
     char *buf;
@@ -83,24 +120,24 @@ char *read_file(char *filename)
     return buf;
 }
 
-char *templat_get_var(struct templat_var_t **vars, int nkeys, char *key)
+const char *templat_get_var(struct templat_row_t *row, const char *key)
 {
     int i;
-    for (i = 0; i < nkeys; i++) {
-        if (strcmp(vars[i]->key, key) == 0) {
-            return vars[i]->val;
+    for (i = 0; i < row->nvars; i++) {
+        if (strcmp(row->vars[i]->key, key) == 0) {
+            return row->vars[i]->val;
         }
     }
     return NULL;
 }
 
-char *templat_process_vars(struct templat_var_t **vars, int nkeys, char *data)
+char *templat_process_vars(struct templat_row_t *row, char *data)
 {
     char *output;
     int offset = 0;
     char key[TEMPLAT_MAX_NUL];
-    char *pos;
-    char *val;
+    const char *pos;
+    const char *val;
     int n;
     int len;
 
@@ -108,12 +145,13 @@ char *templat_process_vars(struct templat_var_t **vars, int nkeys, char *data)
     output[0] = '\0';
 
     while ((pos = strstr(data + offset, "<TMPL_VAR"))) {
-        n = sscanf(pos, "<TMPL_VAR %" XSTR(TEMPLAT_MAX) "[a-zA-Z_]>%n", key, &len);
+        n = sscanf(pos, "<TMPL_VAR %" XSTR(TEMPLAT_MAX) "[a-zA-Z_]>%n",
+                   key, &len);
         if (n != 1) {
             printf("malformed input sequence: %.20s\n", pos);
             goto err;
         }
-        val = templat_get_var(vars, nkeys, key);
+        val = templat_get_var(row, key);
         if (!val) {
             printf("key not found: %s\n", key);
             goto err;
@@ -129,20 +167,19 @@ err:
     return output;
 }
 
-struct templat_loop_t *templat_get_loop(struct templat_loop_t **loops,
-                                        int nloops, char *key)
+struct templat_loop_t *templat_get_loop(struct templat_row_t *row,
+                                        const char *key)
 {
     int i;
-    for (i = 0; i < nloops; i++) {
-        if (strcmp(loops[i]->key, key) == 0) {
-            return loops[i];
+    for (i = 0; i < row->nloops; i++) {
+        if (strcmp(row->loops[i]->key, key) == 0) {
+            return row->loops[i];
         }
     }
     return NULL;
 }
 
-char *templat_process_loops(struct templat_loop_t **loops, int nloops,
-                            char *data)
+char *templat_process_loops(struct templat_row_t *row, char *data)
 {
     char terminator[TEMPLAT_MAX];
     char *output;
@@ -160,7 +197,8 @@ char *templat_process_loops(struct templat_loop_t **loops, int nloops,
     output[0] = '\0';
 
     while ((pos = strstr(data + offset, "<TMPL_LOOP"))) {
-        n = sscanf(pos, "<TMPL_LOOP %" XSTR(TEMPLAT_MAX) "[a-zA-Z_]>%n", key, &len);
+        n = sscanf(pos, "<TMPL_LOOP %" XSTR(TEMPLAT_MAX) "[a-zA-Z_]>%n",
+                   key, &len);
         if (n != 1) {
             printf("malformed input sequence: '%.20s'\n", pos);
             goto err;
@@ -172,16 +210,13 @@ char *templat_process_loops(struct templat_loop_t **loops, int nloops,
             goto err;
         }
         strncat(output, data + offset, pos - data);
-        loop = templat_get_loop(loops, nloops, key);
+        loop = templat_get_loop(row, key);
         if (loop) {
             for (i = 0; i < loop->nrows; i++) {
-                rendered_loop = strndup(pos + len, end - pos - strlen(terminator));
-                rendered_loop = templat_process_loops(loop->rows[i]->loops,
-                                                      loop->rows[i]->nloops,
-                                                      rendered_loop);
-                rendered_loop = templat_process_vars(loop->rows[i]->vars,
-                                                     loop->rows[i]->nkeys,
-                                                     rendered_loop);
+                rendered_loop = strndup(pos + len,
+                                        end - pos - strlen(terminator));
+                rendered_loop = templat_process(loop->rows[i],
+                                                rendered_loop);
                 strcat(output, rendered_loop);
                 free(rendered_loop);
             }
@@ -196,17 +231,26 @@ err:
     return output;
 }
 
-void templat_render(struct templat_t *tmpl, char *filename)
+char *templat_process(struct templat_row_t *row, char *data)
 {
-    char *data = read_file(filename);
+    data = templat_process_loops(row, data);
+    data = templat_process_vars(row, data);
+    return data;
+}
+
+void templat_render(struct templat_t *tmpl)
+{
+    char *data = read_file(tmpl->filename);
 
     if (!data) {
-        printf("error loading template file %s: %s\n", filename, strerror(errno));
+        printf("error loading template file %s: %s\n",
+               tmpl->filename, strerror(errno));
         return;
     }
 
-    data = templat_process_loops(tmpl->loops, tmpl->nloops, data);
-    data = templat_process_vars(tmpl->vars, tmpl->nkeys, data);
+    data = templat_process(&tmpl->row, data);
 
     printf("%s", data);
+
+    free(data);
 }
