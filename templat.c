@@ -209,7 +209,7 @@ char *templat_process_loops(struct templat_row_t *row, char *data)
             printf("unterminated loop: %.20s\n", pos);
             goto err;
         }
-        strncat(output, data + offset, pos - data);
+        strncat(output, data + offset, pos - data - offset);
         loop = templat_get_loop(row, key);
         if (loop) {
             for (i = 0; i < loop->nrows; i++) {
